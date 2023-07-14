@@ -1,0 +1,265 @@
+---
+title: "capstone_data_vis"
+author: "Daniel Cevallos"
+date: "2023-07-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Data science Capstone project- Week 2 Assignment
+
+The goal of this project is just to display that you’ve gotten used to working with the data and that you are on track to create your prediction algorithm. Please submit a report on R Pubs (http://rpubs.com/) that explains your exploratory analysis and your goals for the eventual app and algorithm. This document should be concise and explain only the major features of the data you have identified and briefly summarize your plans for creating the prediction algorithm and Shiny app in a way that would be understandable to a non-data scientist manager. You should make use of tables and plots to illustrate important summaries of the data set. The motivation for this project is to: 1. Demonstrate that you’ve downloaded the data and have successfully loaded it in.2. Create a basic report of summary statistics about the data sets.3. Report any interesting findings that you amassed so far.4. Get feedback on your plans for creating a prediction algorithm and Shiny app. ** REVIEW CRITERIA:** 1. Does the link lead to an HTML page describing the exploratory analysis of the training data set? 2. Has the data scientist done basic summaries of the three files? Word counts, line counts and basic data tables? 3. Has the data scientist made basic plots, such as histograms to illustrate features of the data? 4. Was the report written in a brief, concise style, in a way that a non-data scientist manager could appreciate?
+
+### LOADING THE DATA AND LIBRARIES IN R
+
+```{r libraries}
+library("ggplot2")
+library("tm")
+library("wordcloud")
+library("quanteda")
+library("tufte")
+```
+
+```{r setting-adjustment, include=FALSE}
+## Load BBmisc package again since there has error during knit (while working fine if run chunk-by-chunk)
+suppressMessages(library('BBmisc'))
+
+## Creating a parallel computing Cluster and support functions.
+## Preparing the parallel cluster using the cores
+doParallel::registerDoParallel(cores = 16)
+#'@ BiocParallel::register(MulticoreParam(workers=8))
+
+## Preparing the parallel cluster using the cores
+suppressAll(library('parallel'))
+jobcluster <- makeCluster(detectCores())
+invisible(clusterEvalQ(jobcluster, library('tm')))
+invisible(clusterEvalQ(jobcluster, library('RWeka')))
+options(mc.cores = 2)
+
+## Set the googleVis options first to change the behaviour of plot.gvis, so that only the chart 
+##  component of the HTML file is written into the output file.
+##  
+## Set option to below if you want to plot an independent webpage with graph 
+#'@ op <- options(gvis.plot.tag=NULL)
+op <- options(gvis.plot.tag='chart')
+
+## knitr configuration
+# invalidate cache when the tufte version changes
+suppressAll(library('knitr'))
+
+opts_chunk$set(tidy = TRUE, fig.path = 'figure/', comment = NA, message = FALSE, fig.keep = 'high', fig.width = 10, fig.height = 6, fig.align = 'center', cache.extra = packageVersion('tufte'), echo = TRUE, progress = TRUE)
+
+## Setting for rCharts
+## http://ramnathv.github.io/posts/rcharts-nvd3/
+options(warn = -1, htmltools.dir.version = FALSE, 
+        rcharts.mode = 'iframesrc', rcharts.cdn = TRUE, 
+        RCHART_WIDTH = 600, RCHART_HEIGHT = 400, 
+        RCHART_TEMPLATE = 'Rickshaw.html', RCHART_LIB = 'morris')
+```
+
+```{r clear-memory, include=FALSE}
+## clear memory cache to lease the memory capacity ease
+gc()
+```
+
+The dataset is downloadable in zipped file via [here](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip).
+
+```{r collect-data}
+if(!file.exists('data/')) dir.create('data/')
+
+lnk <- 'https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip'
+destfile <- 'Coursera-SwiftKey.zip'
+
+if(!file.exists(paste0('data/', destfile))) {
+  download.file(lnk, destfile = paste0('data/', destfile))
+}
+
+if(!file.exists(paste0('data/final'))) {
+  ## Unzip the dataset
+  #'@ unzip(paste0('data/', destfile), exdir = 'data/final/de_DE', list = TRUE)
+  # Error in unzip(paste0("data/", destfile), exdir = "data/final/de_DE",  : 
+  #   'exdir' does not exist
+  unzip(paste0('data/', destfile), exdir = 'data/')
+}
+
+## list down the details of the zipped file
+unzip(paste0('data/', destfile), list = TRUE)
+```
+
+```{r assign, include=FALSE}
+blogs <- readLines("data/final/en_US/en_US.blogs.txt")
+news <- readLines("data/final/en_US/en_US.news.txt")
+twitter <- readLines("data/final/en_US/en_US.twitter.txt")
+```
+
+### Dataset summaries
+
+```{r summary}
+size_blogs<-file.size(path="data/final/en_US/en_US.blogs.txt")/2^20
+size_news<-file.size(path="data/final/en_US/en_US.news.txt")/2^20
+size_twitter<-file.size(path="data/final/en_US/en_US.twitter.txt")/2^20
+
+len_blogs<-length(blogs)
+len_news<-length(news)
+len_twitter<-length(twitter)
+
+nchar_blogs<-sum(nchar(blogs))
+nchar_news<-sum(nchar(news))
+nchar_twitter<-sum(nchar(twitter))
+
+library(stringi)
+nword_blogs<-stri_stats_latex(blogs)[4]
+nword_news<-stri_stats_latex(news)[4]
+nword_twitter<-stri_stats_latex(twitter)[4]
+
+table<-data.frame("File Name"=c("Blogs","News","Twitter"),
+                  "File Size(MB)"=c(size_blogs,size_news,size_twitter),
+                  "Num of rows"=c(len_blogs,len_news,len_twitter),
+                  "Num of character"=c(nchar_blogs,nchar_news,nchar_twitter),
+                  "Num of words"=c(nword_blogs,nword_news,nword_twitter))
+
+table
+```
+
+
+### Cleaning the data
+
+Here we will make the test data of the given corpus which will require cleaning of the given corpus data… hence first we’ll clean the given data nd the then take out a sample from and that will be our test data and then we’ll see which words has the highest frequency..
+
+```{r cleanning}
+set.seed(12345)
+
+blogs1<-iconv(blogs,"latin1","ASCII",sub="")
+news1<-iconv(news,"latin1","ASCII",sub="")
+twitter1<-iconv(twitter,"latin1","ASCII",sub="")
+
+rm(blogs)
+rm(news)
+rm(twitter)
+
+# sample data set only 1% of each file
+sample_data<-c(sample(blogs1,length(blogs1)*0.01),
+               sample(news1,length(news1)*0.01),
+               sample(twitter1,length(twitter1)*0.01))
+
+rm(blogs1)
+rm(news1)
+rm(twitter1)
+
+make_corpus <- function(test_file){
+  gen_corp <- paste(test_file, collapse = " ")
+  gen_corp<- VectorSource(gen_corp)
+  gen_corp <- Corpus(gen_corp)
+}
+
+clean_corp <- function(corp_data){
+  corp_data <- tm_map(corp_data, removeNumbers)
+  corp_data <- tm_map(corp_data, content_transformer(tolower))
+  corp_data<- tm_map(corp_data, removeWords, stopwords("english"))
+  corp_data<- tm_map(corp_data, removePunctuation)
+  corp_data<- tm_map(corp_data, stripWhitespace)
+  return (corp_data)
+}
+high_freq_words <-  function(corp_data){
+  term_sparse <- DocumentTermMatrix(corp_data)
+  #convert our term-document-matrix into normal matrix
+  term_matrix <- as.matrix(term_sparse)
+  freq_words <- colSums(term_matrix)
+  freq_words <- as.data.frame(sort(freq_words, decreasing = TRUE))
+  freq_words$words <- rownames(freq_words)
+  colnames(freq_words) <- c("frequency", "word")
+  return(freq_words)
+}
+```
+
+### Build N-gram
+
+```{r corpus,echo=FALSE,include=FALSE}
+library(tm)
+library(NLP)
+
+corpus<-VCorpus(VectorSource(sample_data))
+corpus1<-tm_map(corpus,removePunctuation)
+corpus2<-tm_map(corpus1,stripWhitespace)
+corpus3<-tm_map(corpus2,tolower)
+corpus4<-tm_map(corpus3,removeNumbers)
+corpus5<-tm_map(corpus4,PlainTextDocument)
+corpus6<-tm_map(corpus5,removeWords,stopwords("english"))
+
+corpus_result<-data.frame(text=unlist(sapply(corpus6,'[',"content")),stringsAsFactors = FALSE)
+head(corpus_result)
+
+
+```
+
+```{r nGram }
+library(RWeka)
+
+one<-function(x) NGramTokenizer(x,Weka_control(min=1,max=1))
+two<-function(x) NGramTokenizer(x,Weka_control(min=2,max=2))
+thr<-function(x) NGramTokenizer(x,Weka_control(min=3,max=3))
+
+one_table<-TermDocumentMatrix(corpus6,control=list(tokenize=one))
+two_table<-TermDocumentMatrix(corpus6,control=list(tokenize=two))
+thr_table<-TermDocumentMatrix(corpus6,control=list(tokenize=thr))
+
+one_corpus<-findFreqTerms(one_table,lowfreq=1000)
+two_corpus<-findFreqTerms(two_table,lowfreq=80)
+thr_corpus<-findFreqTerms(thr_table,lowfreq=10)
+
+one_corpus_num<-rowSums(as.matrix(one_table[one_corpus,]))
+one_corpus_table<-data.frame(Word=names(one_corpus_num),frequency=one_corpus_num)
+one_corpus_sort<-one_corpus_table[order(-one_corpus_table$frequency),]
+head(one_corpus_sort)
+```
+
+```{r nGram2Corps }
+two_corpus_num<-rowSums(as.matrix(two_table[two_corpus,]))
+two_corpus_table<-data.frame(Word=names(two_corpus_num),frequency=two_corpus_num)
+two_corpus_sort<-two_corpus_table[order(-two_corpus_table$frequency),]
+head(two_corpus_sort)
+```
+
+```{r nGram3Corps }
+thr_corpus_num<-rowSums(as.matrix(thr_table[thr_corpus,]))
+thr_corpus_table<-data.frame(Word=names(thr_corpus_num),frequency=thr_corpus_num)
+thr_corpus_sort<-thr_corpus_table[order(-thr_corpus_table$frequency),]
+head(thr_corpus_sort)
+```
+
+### Bar Chart of Frequency words
+
+```{r barChart}
+library(ggplot2)
+ 
+one_g<-ggplot(one_corpus_sort[1:10,],aes(x=reorder(Word,-frequency),y=frequency,fill=frequency))
+one_g<-one_g+geom_bar(stat="identity")
+one_g<-one_g+labs(title="Unigrams",x="Words",y="Frequency")
+one_g<-one_g+coord_flip()
+one_g
+```
+
+```{r freq_blogs}
+two_g<-ggplot(two_corpus_sort[1:10,],aes(x=reorder(Word,-frequency),y=frequency,fill=frequency))
+two_g<-two_g+geom_bar(stat="identity")
+two_g<-two_g+labs(title="Bigrams",x="Words",y="Frequency")
+two_g<-two_g+coord_flip()
+two_g
+```
+
+```{r freq_tweet}
+# High frequency words in twitter
+thr_g<-ggplot(thr_corpus_sort[1:10,],aes(x=reorder(Word,-frequency),y=frequency,fill=frequency))
+thr_g<-thr_g+geom_bar(stat="identity")
+thr_g<-thr_g+labs(title="Trigrams",x="Words",y="Frequency")
+thr_g<-thr_g+coord_flip()
+thr_g
+```
+
+### Next plans
+
+Must be make a predictive algorithm, using shiny(), I will check the result which input is coming.
